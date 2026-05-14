@@ -1,51 +1,62 @@
-"""Storage module for recording and loading HTTP snapshots."""
+"""Snapshot persistence — save and load recorded HTTP responses."""
 
-import json
-import os
 import hashlib
-from datetime import datetime
-from typing import Optional
+import json
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-DEFAULT_SNAPSHOT_DIR = ".reqsnap"
 
-
-def _make_key(method: str, url: str, body: Optional[bytes] = None) -> str:
-    """Generate a deterministic filename key for a request."""
-    raw = f"{method.upper()}:{url}"
+def _make_key(url: str, method: str, body: bytes = b"") -> str:
+    """Return a deterministic hex key for a request triple."""
+    raw = f"{method.upper()}:{url}".encode() + b":"
     if body:
-        raw += ":" + hashlib.md5(body).hexdigest()
-    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+        raw += body
+    return hashlib.sha256(raw).hexdigest()
 
 
-def snapshot_path(method: str, url: str, body: Optional[bytes] = None,
-                  snapshot_dir: str = DEFAULT_SNAPSHOT_DIR) -> str:
-    """Return the file path for a given request snapshot."""
-    key = _make_key(method, url, body)
-    os.makedirs(snapshot_dir, exist_ok=True)
-    return os.path.join(snapshot_dir, f"{key}.json")
+def snapshot_path(
+    url: str,
+    method: str,
+    body: bytes = b"",
+    snap_dir: str = "snapshots",
+) -> Path:
+    """Return the Path where a snapshot for this request would be stored."""
+    key = _make_key(url, method, body)
+    return Path(snap_dir) / f"{key}.json"
 
 
-def save_snapshot(method: str, url: str, response: dict,
-                  body: Optional[bytes] = None,
-                  snapshot_dir: str = DEFAULT_SNAPSHOT_DIR) -> str:
-    """Persist a response snapshot to disk. Returns the file path."""
-    path = snapshot_path(method, url, body, snapshot_dir)
-    record = {
-        "method": method.upper(),
+def save_snapshot(
+    url: str,
+    method: str,
+    request_body: bytes,
+    status_code: int,
+    response_headers: Dict[str, str],
+    response_body: str,
+    snap_dir: str = "snapshots",
+) -> Path:
+    """Persist a response snapshot to disk and return its path."""
+    path = snapshot_path(url, method, request_body, snap_dir=snap_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: Dict[str, Any] = {
         "url": url,
-        "recorded_at": datetime.utcnow().isoformat() + "Z",
-        "response": response,
+        "method": method.upper(),
+        "status_code": status_code,
+        "headers": dict(response_headers),
+        "body": response_body,
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
 
 
-def load_snapshot(method: str, url: str, body: Optional[bytes] = None,
-                  snapshot_dir: str = DEFAULT_SNAPSHOT_DIR) -> Optional[dict]:
-    """Load a previously recorded snapshot. Returns None if not found."""
-    path = snapshot_path(method, url, body, snapshot_dir)
-    if not os.path.exists(path):
+def load_snapshot(
+    url: str,
+    method: str,
+    body: bytes = b"",
+    snap_dir: str = "snapshots",
+) -> Optional[Dict[str, Any]]:
+    """Load a snapshot from disk, or return None if it does not exist."""
+    path = snapshot_path(url, method, body, snap_dir=snap_dir)
+    if not path.exists():
         return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return json.loads(path.read_text(encoding="utf-8"))
