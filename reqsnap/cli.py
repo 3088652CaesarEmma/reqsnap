@@ -1,13 +1,4 @@
-"""CLI entry-point for reqsnap.
-
-Commands
---------
-list    – list recorded snapshots
-show    – pretty-print a single snapshot
-delete  – remove a snapshot file
-diff    – compare two snapshots and display differences
-"""
-
+"""Command-line interface for reqsnap."""
 from __future__ import annotations
 
 import argparse
@@ -15,9 +6,10 @@ import json
 import sys
 from pathlib import Path
 
-from reqsnap.storage import load_snapshot
 from reqsnap.matcher import list_snapshots
-from reqsnap.differ import diff_snapshots, is_identical
+from reqsnap.storage import load_snapshot, snapshot_path
+from reqsnap.differ import diff_snapshots
+from reqsnap.inspector import summarise_snapshot, validate_snapshot
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -26,74 +18,89 @@ def cmd_list(args: argparse.Namespace) -> None:
     if not snaps:
         print("No snapshots found.")
         return
-    for snap in snaps:
-        print(snap.name)
+    for p in snaps:
+        print(p.name)
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    snap_dir = Path(args.snap_dir)
-    path = snap_dir / args.key
+    path = Path(args.snap_dir) / args.name
     if not path.exists():
-        print(f"Snapshot not found: {args.key}", file=sys.stderr)
+        print(f"Snapshot not found: {args.name}", file=sys.stderr)
         sys.exit(1)
-    data = load_snapshot(path)
-    print(json.dumps(data, indent=2))
+    snap = load_snapshot(path)
+    print(json.dumps(snap, indent=2))
 
 
 def cmd_delete(args: argparse.Namespace) -> None:
-    snap_dir = Path(args.snap_dir)
-    path = snap_dir / args.key
+    path = Path(args.snap_dir) / args.name
     if not path.exists():
-        print(f"Snapshot not found: {args.key}", file=sys.stderr)
+        print(f"Snapshot not found: {args.name}", file=sys.stderr)
         sys.exit(1)
     path.unlink()
-    print(f"Deleted {args.key}")
+    print(f"Deleted {args.name}")
 
 
 def cmd_diff(args: argparse.Namespace) -> None:
-    """Compare two snapshots by key and print a JSON diff."""
     snap_dir = Path(args.snap_dir)
-    path_a = snap_dir / args.key_a
-    path_b = snap_dir / args.key_b
-
-    for label, path in ((args.key_a, path_a), (args.key_b, path_b)):
-        if not path.exists():
-            print(f"Snapshot not found: {label}", file=sys.stderr)
-            sys.exit(1)
-
-    snap_a = load_snapshot(path_a)
-    snap_b = load_snapshot(path_b)
-    diff = diff_snapshots(snap_a, snap_b)
-
-    if is_identical(diff):
+    a = load_snapshot(snap_dir / args.a)
+    b = load_snapshot(snap_dir / args.b)
+    result = diff_snapshots(a, b)
+    if not result:
         print("Snapshots are identical.")
     else:
-        print(json.dumps(diff, indent=2))
+        print(json.dumps(result, indent=2))
+
+
+def cmd_inspect(args: argparse.Namespace) -> None:
+    """Summarise and optionally validate one or all snapshots."""
+    snap_dir = Path(args.snap_dir)
+
+    if args.name:
+        paths = [snap_dir / args.name]
+    else:
+        paths = list_snapshots(snap_dir)
+
+    if not paths:
+        print("No snapshots found.")
+        return
+
+    for p in paths:
+        summary = summarise_snapshot(p)
+        print(
+            f"{summary['file']}  "
+            f"{summary['method']} {summary['url']}  "
+            f"HTTP {summary['status']}  "
+            f"{summary['response_body_bytes'] or 0}B"
+        )
+        if args.validate:
+            warnings = validate_snapshot(p)
+            if warnings:
+                for w in warnings:
+                    print(f"  ⚠  {w}")
+            else:
+                print("  ✓ valid")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="reqsnap",
-        description="HTTP request recorder and replay tool.",
-    )
-    parser.add_argument(
-        "--snap-dir",
-        default=".reqsnap",
-        help="Directory where snapshots are stored (default: .reqsnap)",
-    )
+    parser = argparse.ArgumentParser(prog="reqsnap", description="HTTP snapshot tool")
+    parser.add_argument("--snap-dir", default=".reqsnap", help="Snapshot directory")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("list", help="List recorded snapshots")
+    sub.add_parser("list", help="List all snapshots")
 
-    show_p = sub.add_parser("show", help="Show a snapshot")
-    show_p.add_argument("key", help="Snapshot filename")
+    show_p = sub.add_parser("show", help="Print a snapshot as JSON")
+    show_p.add_argument("name")
 
     del_p = sub.add_parser("delete", help="Delete a snapshot")
-    del_p.add_argument("key", help="Snapshot filename")
+    del_p.add_argument("name")
 
     diff_p = sub.add_parser("diff", help="Diff two snapshots")
-    diff_p.add_argument("key_a", help="First snapshot filename (baseline)")
-    diff_p.add_argument("key_b", help="Second snapshot filename")
+    diff_p.add_argument("a")
+    diff_p.add_argument("b")
+
+    inspect_p = sub.add_parser("inspect", help="Summarise and validate snapshots")
+    inspect_p.add_argument("name", nargs="?", default=None, help="Specific snapshot (omit for all)")
+    inspect_p.add_argument("--validate", action="store_true", help="Run validation checks")
 
     return parser
 
@@ -106,12 +113,14 @@ def main(argv: list[str] | None = None) -> None:
         "show": cmd_show,
         "delete": cmd_delete,
         "diff": cmd_diff,
+        "inspect": cmd_inspect,
     }
-    if args.command not in dispatch:
+    fn = dispatch.get(args.command)
+    if fn is None:
         parser.print_help()
-        sys.exit(1)
-    dispatch[args.command](args)
+        sys.exit(0)
+    fn(args)
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()
