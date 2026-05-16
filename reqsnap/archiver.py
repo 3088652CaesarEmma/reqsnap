@@ -76,7 +76,14 @@ def restore_archive(
 
     Returns:
         List of filenames that were actually written.
+
+    Raises:
+        FileNotFoundError: If archive_path does not exist.
+        tarfile.TarError: If the archive is corrupt or not a valid tar file.
     """
+    if not archive_path.exists():
+        raise FileNotFoundError(f"Archive not found: {archive_path}")
+
     snap_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
 
