@@ -59,4 +59,27 @@ def load_snapshot(
     path = snapshot_path(url, method, body, snap_dir=snap_dir)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Snapshot file is corrupted or contains invalid JSON: {path}"
+        ) from exc
+
+
+def delete_snapshot(
+    url: str,
+    method: str,
+    body: bytes = b"",
+    snap_dir: str = "snapshots",
+) -> bool:
+    """Delete a snapshot from disk.
+
+    Returns True if the snapshot existed and was deleted, False if it was
+    not found.
+    """
+    path = snapshot_path(url, method, body, snap_dir=snap_dir)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
